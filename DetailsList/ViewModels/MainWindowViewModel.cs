@@ -1,9 +1,11 @@
 ﻿using DetailsList.Infrastructure;
 using DetailsList.Infrastructure.Commands;
+using DetailsList.Infrastructure.Database;
 using DetailsList.ViewModels.Base;
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -133,24 +135,40 @@ namespace DetailsList.ViewModels
         public int? FilesCount => Files?.Count;
 
         /// <summary>
-        /// Список деталей
+        /// Список строк результата (одна строка = один файл УП)
         /// </summary>
-        private List<string> _Details;
+        private ObservableCollection<DetailRow> _DetailRows;
 
-        public List<string> Details
+        public ObservableCollection<DetailRow> DetailRows
         {
-            get => _Details;
-            set => Set(ref _Details, value);
+            get => _DetailRows;
+            set => Set(ref _DetailRows, value);
         }
 
-        public int? DetailsCount => Details?.Count;
+        public int? DetailsCount => DetailRows?.Count;
 
-        public string DetailsText {
-            get
-            {
-                Details?.Sort();
-                return string.Join("\n", Details is null ? new List<string>() : Details);
-            }
+        /// <summary>
+        /// Текстовое представление результата (для сохранения в файл).
+        /// </summary>
+        public string DetailsText
+        {
+            get => BuildCsv();
+        }
+
+        /// <summary>
+        /// Строковые обозначения серийных деталей, загруженные из БД
+        /// </summary>
+        private List<string> _SerialPartNameContains;
+
+        /// <summary>
+        /// Строка подключения к БД stanki
+        /// </summary>
+        private string _ConnectionString;
+
+        public string ConnectionString
+        {
+            get => _ConnectionString;
+            set => Set(ref _ConnectionString, value);
         }
 
         /// <summary>
@@ -222,10 +240,11 @@ namespace DetailsList.ViewModels
             if (DetailsCount > 0)
             {
                 SaveFileDialog saveFileDialog = new();
-                saveFileDialog.Filter = "Текстовые файлы (*.txt)|*.txt|Все файлы (*.*)|*.*";
+                saveFileDialog.Filter = "CSV-файлы (*.csv)|*.csv|Все файлы (*.*)|*.*";
+                saveFileDialog.DefaultExt = "csv";
                 if(saveFileDialog.ShowDialog() == DialogResult.OK)
                 {
-                    File.WriteAllText(saveFileDialog.FileName, DetailsText);
+                    File.WriteAllText(saveFileDialog.FileName, BuildCsv(), new UTF8Encoding(true));
                     Status = $"Список записан в файл \"{saveFileDialog.FileName}\"";
                 }
             }
@@ -243,13 +262,16 @@ namespace DetailsList.ViewModels
             SetPathCommand = new LambdaCommand(OnSetPathCommandExecuted, CanSetPathCommandExecute);
             FindDetailsCommand = new LambdaCommand(OnFindDetailsCommandExecuted, CanFindDetailsCommandExecute);
             SaveDetailsToFileCommand = new LambdaCommand(OnSaveDetailsToFileCommandExecuted, CanSaveDetailsToFileCommandExecute);
+
+            if (string.IsNullOrWhiteSpace(ConnectionString))
+                Status = "Укажите строку подключения к БД stanki, чтобы включить сопоставление с серийными деталями.";
         }
 
         private void FindPrograms(string path)
         {
             FindButtonText = "Остановить";
             Files = new();
-            Details = new();
+            DetailRows = new();
             Status = "Подсчет файлов";
             BrowseButtonEnabled = false;
             SaveButtonEnabled = false;
@@ -258,6 +280,9 @@ namespace DetailsList.ViewModels
             OnPropertyChanged(nameof(DetailsCount));
             OnPropertyChanged(nameof(DetailsText));
             ProgressBarVisibility = Visibility.Collapsed;
+
+            _SerialPartNameContains = LoadSerialPartNames();
+
             GetFiles(path);
             ProgressMaxValue = (double)FilesCount;
             Progress = 0;
@@ -273,54 +298,24 @@ namespace DetailsList.ViewModels
                 Progress++;
                 try
                 {
-                    switch (FindMode)
+                    var (name, designation) = TryExtractDetail(file, TargetPath);
+                    if (designation is null)
+                        continue;
+
+                    var row = new DetailRow
                     {
-                        case FindMode.General:
-                            var generalLines = File.ReadLines(file).Take(2).ToArray();
-                            if (generalLines.Length > 0 && generalLines[0] == "%")
-                            {
-                                var generalDetail = GetDetailNameFromPath(file, TargetPath);
-                                if (!Details.Contains(generalDetail) && !string.IsNullOrEmpty(generalDetail)) Details.Add(generalDetail);
-                            }
-                            break;
-                        case FindMode.GeneralOnlyNumbers:
-                            var onlyNumberslines = File.ReadLines(file).Take(2).ToArray();
-                            if (onlyNumberslines.Length > 0 && onlyNumberslines[0] == "%")
-                            {
-                                var generalDetail = GetDetailNameFromPath(file, TargetPath, GetNameOptions.OnlyNumber);
-                                if (!Details.Contains(generalDetail) && !string.IsNullOrEmpty(generalDetail)) Details.Add(generalDetail);
-                            }
-                            break;
-                        case FindMode.Mazak350:
-                            var mazak350Detail = NCRenamer.Util.GetMazatrolSmartName(file).TranslateFromEnNumber().FindNumber();
-                            if (!Details.Contains(mazak350Detail) && !string.IsNullOrEmpty(mazak350Detail)) Details.Add(mazak350Detail);
-                            break;
-                        case FindMode.FileName:
-                            var fileNameDetail = NCRenamer.Util.GetPartNameFromFileName(file).TranslateFromEnNumber().Replace(".FREZEROVKA","").FindNumber();
-                            if (!Details.Contains(fileNameDetail) && !string.IsNullOrEmpty(fileNameDetail)) Details.Add(fileNameDetail);
-                            break;
-                        case FindMode.DirName:
-                            if (NCRenamer.Util.machineExtensions.Contains(Path.GetExtension(file).ToLower()))
-                            {
-                                var dirNameDetail = GetDetailNameFromPath(file, TargetPath, GetNameOptions.AsIs).TranslateFromEnNumber().Replace("_"," ");
-                                if (!Details.Contains(dirNameDetail) && !string.IsNullOrEmpty(dirNameDetail)) Details.Add(dirNameDetail);
-                            }
-                            
-                            break;
-                        case FindMode.QuaserOnlyNumbers:
-                            if (Path.GetExtension(file).ToLowerInvariant() != ".h") break;
-                            var quaserLines = File.ReadLines(file).Take(2).ToArray();
-                            if (quaserLines.Length > 0 && quaserLines[0].Contains("BEGIN PGM"))
-                            {
-                                var quaserDetail = GetDetailNameFromPath(file, TargetPath);
-                                if (!Details.Contains(quaserDetail) && !string.IsNullOrEmpty(quaserDetail)) Details.Add(quaserDetail);
-                            }
-                            break;
-                        default:
-                            break;
-                    }
-                    OnPropertyChanged(nameof(DetailsCount));
-                    OnPropertyChanged(nameof(DetailsText));
+                        Name = name,
+                        Designation = designation,
+                        ProgramFile = Path.GetFileName(file),
+                        Modified = File.GetLastWriteTime(file),
+                        IsSerial = IsSerialDesignation(designation),
+                    };
+                    Application.Current.Dispatcher.Invoke(() =>
+                    {
+                        DetailRows.Add(row);
+                        OnPropertyChanged(nameof(DetailsCount));
+                        OnPropertyChanged(nameof(DetailsText));
+                    });
                 }
                 catch (Exception e)
                 {
@@ -333,6 +328,130 @@ namespace DetailsList.ViewModels
             ModeComboboxEnabled = true;
             FindButtonText = "Сформировать";
             GetFilesThreadFlag = false;
+        }
+
+        /// <summary>
+        /// Определяет наименование и обозначение детали по файлу УП в зависимости от режима поиска.
+        /// Возвращает designation == null, если файл не является программой в текущем режиме.
+        /// </summary>
+        private (string Name, string Designation) TryExtractDetail(string file, string targetPath)
+        {
+            switch (FindMode)
+            {
+                case FindMode.General:
+                case FindMode.GeneralOnlyNumbers:
+                    var generalLines = File.ReadLines(file).Take(2).ToArray();
+                    if (generalLines.Length == 0 || generalLines[0] != "%")
+                        return (string.Empty, null);
+                    return GetNameAndDesignationFromPath(file, targetPath);
+                case FindMode.QuaserOnlyNumbers:
+                    if (Path.GetExtension(file).ToLowerInvariant() != ".h")
+                        return (string.Empty, null);
+                    var quaserLines = File.ReadLines(file).Take(2).ToArray();
+                    if (quaserLines.Length == 0 || !quaserLines[0].Contains("BEGIN PGM"))
+                        return (string.Empty, null);
+                    return GetNameAndDesignationFromPath(file, targetPath);
+                case FindMode.DirName:
+                    if (!NCRenamer.Util.machineExtensions.Contains(Path.GetExtension(file).ToLower()))
+                        return (string.Empty, null);
+                    return (string.Empty,
+                        GetDetailNameFromPath(file, targetPath, GetNameOptions.AsIs).TranslateFromEnNumber().Replace("_", " "));
+                case FindMode.FileName:
+                    return (string.Empty,
+                        NCRenamer.Util.GetPartNameFromFileName(file).TranslateFromEnNumber().Replace(".FREZEROVKA", "").FindNumber());
+                case FindMode.Mazak350:
+                    return (string.Empty, NCRenamer.Util.GetMazatrolSmartName(file).TranslateFromEnNumber().FindNumber());
+                default:
+                    return (string.Empty, null);
+            }
+        }
+
+        /// <summary>
+        /// Определяет наименование и обозначение по структуре папок пути УП.
+        /// </summary>
+        private static (string Name, string Designation) GetNameAndDesignationFromPath(string file, string targetPath)
+        {
+            string cwd = file;
+            while (cwd != targetPath)
+            {
+                cwd = Directory.GetParent(cwd).FullName;
+                var folderName = Path.GetFileName(cwd);
+                foreach (var sign in DetailsInfo.numberSigns)
+                {
+                    if (folderName.Contains(sign))
+                    {
+                        return (Directory.GetParent(cwd).Name, folderName);
+                    }
+                }
+            }
+            return (string.Empty, string.Empty);
+        }
+
+        /// <summary>
+        /// Загружает имена серийных деталей из БД стanki.
+        /// </summary>
+        private List<string> LoadSerialPartNames()
+        {
+            if (string.IsNullOrWhiteSpace(ConnectionString))
+            {
+                Status = "Строка подключения не задана — сопоставление с серийными деталями выполняться не будет.";
+                return new List<string>();
+            }
+
+            try
+            {
+                return PartsRepository.GetSerialPartDesignations(ConnectionString);
+            }
+            catch (Exception e)
+            {
+                Status = $"Не удалось прочитать БД: {e.Message}";
+                return new List<string>();
+            }
+        }
+
+        /// <summary>
+        /// Проверяет, является ли обозначение серийной деталью (по вхождению в имена из БД).
+        /// </summary>
+        private bool IsSerialDesignation(string designation)
+        {
+            if (_SerialPartNameContains is null || _SerialPartNameContains.Count == 0)
+                return false;
+            if (string.IsNullOrWhiteSpace(designation))
+                return false;
+            return _SerialPartNameContains.Any(p =>
+                !string.IsNullOrWhiteSpace(p) &&
+                p.Contains(designation, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
+        /// Формирует CSV-представление результата.
+        /// </summary>
+        private string BuildCsv()
+        {
+            if (DetailRows is null || DetailRows.Count == 0)
+                return string.Empty;
+
+            var sb = new StringBuilder();
+            sb.AppendLine("Наименование;Обозначение;Имя файла УП;Дата изменения;Серийная");
+            foreach (var row in DetailRows)
+            {
+                sb.AppendLine(string.Join(";",
+                    CsvEscape(row.Name),
+                    CsvEscape(row.Designation),
+                    CsvEscape(row.ProgramFile),
+                    row.Modified.ToString("dd.MM.yyyy HH:mm", CultureInfo.InvariantCulture),
+                    row.IsSerial ? "true" : "false"));
+            }
+            return sb.ToString().TrimEnd('\r', '\n');
+        }
+
+        private static string CsvEscape(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+                return string.Empty;
+            if (value.Contains(';') || value.Contains('"') || value.Contains('\n'))
+                return $"\"{value.Replace("\"", "\"\"")}\"";
+            return value;
         }
 
         private void GetFiles(string path)

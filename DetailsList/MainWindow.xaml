@@ -19,7 +19,7 @@
         </Style>
     </Window.Resources>
     <DockPanel LastChildFill="True">
-        <DockPanel DockPanel.Dock="Top" Height="Auto" LastChildFill="True"  Margin="0 0 0 0">
+        <DockPanel DockPanel.Dock="Top" Height="Auto" LastChildFill="True" Margin="0 0 0 0">
             <StackPanel Orientation="Horizontal" DockPanel.Dock="Right">
                 <Button Content="Обзор..." Padding="5 3" Margin="0 0 3 0" 
                         IsEnabled="{Binding BrowseButtonEnabled}" Command="{Binding SetPathCommand}"/>
@@ -29,8 +29,43 @@
                 <Button Content="Сохранить в файл" Padding="5 3" IsEnabled="{Binding SaveButtonEnabled}" 
                         Command="{Binding SaveDetailsToFileCommand}" Margin="0 0 6 0" />
             </StackPanel>
-            <TextBox Text="{Binding TargetPath}" IsReadOnly="True" Padding="5 3" Margin="6 0 3 0"/>
+            <Grid Margin="6 0 3 0">
+                <TextBox x:Name="TargetPathTextBox" Text="{Binding TargetPath}" IsReadOnly="True" Padding="5 3"/>
+                <TextBlock Text="Путь к папке" Margin="5 0 0 0"
+                           VerticalAlignment="Center" HorizontalAlignment="Left"
+                           Foreground="#97A1AA" FontStyle="Italic" IsHitTestVisible="False">
+                    <TextBlock.Style>
+                        <Style TargetType="TextBlock">
+                            <Setter Property="Visibility" Value="Collapsed"/>
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding Text, ElementName=TargetPathTextBox, UpdateSourceTrigger=PropertyChanged}" Value="">
+                                    <Setter Property="Visibility" Value="Visible"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </TextBlock.Style>
+                </TextBlock>
+            </Grid>
+            
         </DockPanel>
+        <Grid DockPanel.Dock="Top" Margin="6 4 5 0">
+            <TextBox x:Name="ConnectionStringTextBox" Text="{Binding ConnectionString}" Padding="5 3"
+                     ToolTip="Строка подключения к БД stanki"/>
+            <TextBlock Text="Строка подключения" Margin="5 0 0 0"
+                       VerticalAlignment="Center" HorizontalAlignment="Left"
+                       Foreground="#97A1AA" FontStyle="Italic" IsHitTestVisible="False">
+                <TextBlock.Style>
+                    <Style TargetType="TextBlock">
+                        <Setter Property="Visibility" Value="Collapsed"/>
+                        <Style.Triggers>
+                            <DataTrigger Binding="{Binding Text, ElementName=ConnectionStringTextBox, UpdateSourceTrigger=PropertyChanged}" Value="">
+                                <Setter Property="Visibility" Value="Visible"/>
+                            </DataTrigger>
+                        </Style.Triggers>
+                    </Style>
+                </TextBlock.Style>
+            </TextBlock>
+        </Grid>
         <StatusBar DockPanel.Dock="Bottom">
             <StatusBarItem>
                 <TextBlock Text="{Binding Status}"/>
@@ -59,7 +94,18 @@
                 <TextBlock Grid.Row="1" Grid.Column="0" Text="Деталей:"/>
             <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding DetailsCount}"/>
             <GroupBox Grid.Row="2" Grid.ColumnSpan="3" Header="Список">
-                <TextBox IsReadOnly="True" Text="{Binding DetailsText, UpdateSourceTrigger=PropertyChanged, Mode=OneWay}" IsReadOnlyCaretVisible="True" VerticalScrollBarVisibility="Auto"/>
+                <DataGrid ItemsSource="{Binding DetailRows}" AutoGenerateColumns="False" IsReadOnly="True"
+                          CanUserAddRows="False" CanUserDeleteRows="False"
+                          GridLinesVisibility="All" HeadersVisibility="Column"
+                          VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto">
+                    <DataGrid.Columns>
+                        <DataGridTextColumn Header="Наименование" Binding="{Binding Name}" Width="*"/>
+                        <DataGridTextColumn Header="Обозначение" Binding="{Binding Designation}" Width="*"/>
+                        <DataGridTextColumn Header="Имя файла УП" Binding="{Binding ProgramFile}" Width="*"/>
+                        <DataGridTextColumn Header="Дата изменения" Binding="{Binding Modified, StringFormat=dd.MM.yyyy HH:mm}" Width="130"/>
+                        <DataGridCheckBoxColumn Header="Серийная" Binding="{Binding IsSerial}" Width="90" IsReadOnly="True"/>
+                    </DataGrid.Columns>
+                </DataGrid>
             </GroupBox>
         </Grid>
     </DockPanel>
