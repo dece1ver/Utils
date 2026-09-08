@@ -14,6 +14,7 @@ namespace Cutter
         }
 
         private string _fileName;
+        private long _fileSize;
         private string _lastXy;
         private int _lastXyIndex;
         private int _parts;
@@ -41,20 +42,11 @@ namespace Cutter
             _endingStartPoint = 0;
             _fileName = openFileDialog1.FileName;
             textBox2.Text = openFileDialog1.SafeFileName;
-            long fileSize = new FileInfo(_fileName).Length;
-            textBox1.Text = "";
+            _fileSize = new FileInfo(_fileName).Length;
             textBox3.Text = "";
-            textBox1.Text += $"Открыт файл:...........{_fileName}\r\n";
-            textBox1.Text += $"Общий размер:..........{fileSize / 1024} Кб\r\n";
-            textBox1.Text += "Допустимый размер:.....480 Кб\r\n";
-            _parts = (Convert.ToInt32(fileSize / 1024)) / 480 + 1;
-            textBox1.Text += $"Частей:................{_parts}\r\n";
             _lines = File.ReadAllLines(_fileName);
-            textBox1.Text += $"Строк всего:...........{_lines.Length}\r\n";
             numericUpDown1.Maximum = _lines.Length;
             numericUpDown2.Maximum = _lines.Length;
-            _partStrings = _lines.Length / _parts;
-            textBox1.Text += $"Строк в каждой части:..≈ {_partStrings.ToString().Remove(_partStrings.ToString().Length - 3, 3)}k\r\n";
             _headEndPoint = 0;
             foreach (string line in _lines)
             {
@@ -72,7 +64,6 @@ namespace Cutter
                 if (line.Contains("F") && line.Contains("G1"))
                 {
                     _feed = line.Remove(0, line.IndexOf('F'));
-                    textBox1.Text += $"Подача:................{_feed}\r\n\r\n";
                     break;
                 }
             }
@@ -81,7 +72,6 @@ namespace Cutter
                 label7.Visible = true;
                 textBox5.Visible = true;
                 button5.Visible = true;
-                textBox1.AppendText("Подача не обнаружена. Можно установить подачу в появившейся форме." + Environment.NewLine);
             }
 
             _endingStartPoint = 0;
@@ -102,30 +92,97 @@ namespace Cutter
             string[] endLines = new string[_lines.Length - _endingStartPoint];
             Array.Copy(_lines, _endingStartPoint, endLines, 0, (_lines.Length - _endingStartPoint));
 
-            if ((fileSize / 1024) < 480)
+            RefreshInfoText();
+
+        }
+
+        private int GetMaxSizeKb()
+        {
+            if (numericUpDownMaxSize == null)
+                return 480;
+            int value = Convert.ToInt32(numericUpDownMaxSize.Value);
+            return value > 0 ? value : 480;
+        }
+
+        private void NumericUpDownMaxSize_ValueChanged(object sender, EventArgs e)
+        {
+            if (string.IsNullOrEmpty(_fileName) || _lines == null || _lines.Length == 0)
+                return;
+
+            RefreshInfoText();
+        }
+
+        private void RefreshInfoText()
+        {
+            int maxSizeKb = GetMaxSizeKb();
+            long fileSizeKb = _fileSize / 1024;
+            _parts = Convert.ToInt32(fileSizeKb) / maxSizeKb + 1;
+            _partStrings = _lines.Length / _parts;
+
+            textBox1.Text = "";
+            textBox1.Text += $"Открыт файл:...........{_fileName}\r\n";
+            textBox1.Text += $"Общий размер:..........{fileSizeKb} Кб\r\n";
+            textBox1.Text += $"Допустимый размер:.....{maxSizeKb} Кб\r\n";
+            textBox1.Text += $"Частей:................{_parts}\r\n";
+            textBox1.Text += $"Строк всего:...........{_lines.Length}\r\n";
+            textBox1.Text += $"Строк в каждой части:..≈ {FormatPartStrings()}k\r\n";
+            long partKb = EstimatePartSizeKb();
+            textBox1.Text += $"Расчётный вес части:...≈ {partKb} Кб{(partKb > maxSizeKb ? " (превышает лимит!)" : "")}\r\n";
+            if (!string.IsNullOrEmpty(_feed))
             {
-                textBox1.Text = "Файл нормального размера, ничего разделять не надо.";
-                button4.Enabled = false;
-                numericUpDown1.Enabled = false;
-                numericUpDown2.Enabled = false;
-                button2.Enabled = false;
-                button3.Enabled = false;
-                textBox3.Enabled = false;
-                textBox3.Text = "";
-                textBox4.Text = "";
-                textBox4.Enabled = false;
+                textBox1.Text += $"Подача:................{_feed}\r\n\r\n";
             }
             else
             {
-                button4.Enabled = true;
-                numericUpDown1.Enabled = true;
-                numericUpDown2.Enabled = true;
-                button2.Enabled = true;
-                button3.Enabled = true;
-                textBox3.Enabled = true;
-                textBox4.Enabled = true;
+                textBox1.AppendText("Подача не обнаружена. Можно установить подачу в появившейся форме." + Environment.NewLine);
             }
 
+            bool needSplit = fileSizeKb >= maxSizeKb;
+            button4.Enabled = needSplit;
+            numericUpDown1.Enabled = needSplit;
+            numericUpDown2.Enabled = needSplit;
+            button2.Enabled = needSplit;
+            button3.Enabled = needSplit;
+            textBox3.Enabled = needSplit;
+            textBox4.Enabled = needSplit;
+            if (!needSplit)
+            {
+                textBox1.Text = "Файл нормального размера, ничего разделять не надо.";
+                textBox3.Text = "";
+                textBox4.Text = "";
+            }
+        }
+
+        private string FormatPartStrings()
+        {
+            string s = _partStrings.ToString();
+            if (s.Length <= 3)
+                return s;
+            return s.Remove(s.Length - 3, 3);
+        }
+
+        private long EstimatePartSizeKb()
+        {
+            if (_lines == null || _lines.Length == 0 || _parts <= 0)
+                return 0;
+            long headBytes = GetLinesByteSize(Head);
+            long endingBytes = GetLinesByteSize(Ending);
+            int bodyLines = _lines.Length - Head.Count - Ending.Count;
+            if (bodyLines < 0)
+                bodyLines = 0;
+            double avgBytesPerLine = (double)_fileSize / _lines.Length;
+            double partBytes = headBytes + endingBytes + avgBytesPerLine * bodyLines / _parts;
+            return (long)System.Math.Ceiling(partBytes / 1024);
+        }
+
+        private static long GetLinesByteSize(List<string> lines)
+        {
+            if (lines == null || lines.Count == 0)
+                return 0;
+            long size = 0;
+            foreach (string line in lines)
+                size += System.Text.Encoding.UTF8.GetByteCount(line ?? "") + 2; // + CRLF
+            return size;
         }
 
         private void Button1_Click(object sender, EventArgs e)
